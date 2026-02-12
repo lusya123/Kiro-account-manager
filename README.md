@@ -109,6 +109,16 @@ View version info, feature list, tech stack and author info.
 
 ---
 
+## 📚 Documentation
+
+All project documentation is organized in the [`docs/`](docs/) directory:
+
+- **[Development Docs](docs/development/)** - Architecture design, implementation plan, project handoff, and session prompts
+- **[Deployment Guide](docs/deployment/DEPLOYMENT.md)** - Complete deployment instructions for Web and Electron platforms
+- **[Project Summary](docs/development/PROJECT_SUMMARY.md)** - Technical overview and completion status
+
+---
+
 ## 📥 Installation
 
 ### Windows

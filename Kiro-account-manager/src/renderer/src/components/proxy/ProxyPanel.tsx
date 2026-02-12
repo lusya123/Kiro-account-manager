@@ -99,8 +99,25 @@ export function ProxyPanel() {
   const [apiKeyFormat, setApiKeyFormat] = useState<'sk' | 'simple' | 'token'>('sk')
   const [apiKeyCopied, setApiKeyCopied] = useState(false)
   const [apiKeyGenerated, setApiKeyGenerated] = useState(false)
+  const api = (window as any).api
 
   const accounts = useAccountsStore(state => state.accounts)
+  const persistProxyConfig = useCallback(async (patch: Partial<ProxyConfig>) => {
+    try {
+      if (api?.proxyUpdateConfig) {
+        await api.proxyUpdateConfig(patch)
+        return
+      }
+
+      await fetch('/api/proxy/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config: patch })
+      })
+    } catch (err) {
+      console.warn('[Proxy] Failed to persist config:', err)
+    }
+  }, [api])
 
   // 生成随机 API Key
   const generateApiKey = useCallback(() => {
@@ -125,11 +142,11 @@ export function ProxyPanel() {
     }
     
     setConfig(prev => ({ ...prev, apiKey: newKey }))
-    window.api.proxyUpdateConfig({ apiKey: newKey })
+    void persistProxyConfig({ apiKey: newKey })
     setShowApiKey(true)
     setApiKeyGenerated(true)
     setTimeout(() => setApiKeyGenerated(false), 1500)
-  }, [apiKeyFormat])
+  }, [apiKeyFormat, persistProxyConfig])
 
   // 复制 API Key
   const copyApiKey = useCallback(() => {
@@ -143,36 +160,68 @@ export function ProxyPanel() {
   // 获取状态
   const fetchStatus = useCallback(async () => {
     try {
-      const result = await window.api.proxyGetStatus()
-      setIsRunning(result.running)
-      if (result.config) {
-        const cfg = result.config as ProxyConfig & { selectedAccountIds?: string[] }
-        // 将 selectedAccountIds 数组转换为单个 selectedAccountId
-        if (cfg.selectedAccountIds && cfg.selectedAccountIds.length > 0) {
-          cfg.selectedAccountId = cfg.selectedAccountIds[0]
+      if (api?.proxyGetStatus) {
+        const result = await api.proxyGetStatus()
+        setIsRunning(result.running)
+        if (result.config) {
+          const cfg = result.config as ProxyConfig & { selectedAccountIds?: string[] }
+          // 将 selectedAccountIds 数组转换为单个 selectedAccountId
+          if (cfg.selectedAccountIds && cfg.selectedAccountIds.length > 0) {
+            cfg.selectedAccountId = cfg.selectedAccountIds[0]
+          }
+          setConfig(cfg)
         }
-        setConfig(cfg)
-      }
-      if (result.stats) {
-        setStats(result.stats as ProxyStats)
-      }
-      if (result.sessionStats) {
-        setSessionStats(result.sessionStats as SessionStats)
+        if (result.stats) {
+          setStats(result.stats as ProxyStats)
+        }
+        if (result.sessionStats) {
+          setSessionStats(result.sessionStats as SessionStats)
+        }
+
+        const accountsResult = await api.proxyGetAccounts()
+        setAccountCount(accountsResult.accounts.length)
+        setAvailableCount(accountsResult.availableCount)
+        return
       }
 
-      const accountsResult = await window.api.proxyGetAccounts()
-      setAccountCount(accountsResult.accounts.length)
-      setAvailableCount(accountsResult.availableCount)
+      const [statusResp, statsResp] = await Promise.all([
+        fetch('/api/proxy/status'),
+        fetch('/api/proxy/stats')
+      ])
+      const statusResult = await statusResp.json()
+      const statsResult = await statsResp.json()
+
+      setIsRunning(Boolean(statusResult.running))
+      if (statusResult.config) {
+        setConfig((prev) => ({ ...prev, ...statusResult.config }))
+      }
+      setStats(statsResult as ProxyStats)
+      setSessionStats(null)
+
+      const total = accounts.size
+      const available = Array.from(accounts.values()).filter(acc => acc.status === 'active').length
+      setAccountCount(total)
+      setAvailableCount(available)
     } catch (err) {
       console.error('Failed to fetch proxy status:', err)
     }
-  }, [])
+  }, [api, accounts])
 
   // 同步账号到反代池
   const syncAccounts = useCallback(async () => {
     setIsSyncing(true)
     setSyncSuccess(false)
     try {
+      if (!api?.proxySyncAccounts) {
+        const total = accounts.size
+        const available = Array.from(accounts.values()).filter(acc => acc.status === 'active').length
+        setAccountCount(total)
+        setAvailableCount(available)
+        setSyncSuccess(true)
+        setTimeout(() => setSyncSuccess(false), 2000)
+        return
+      }
+
       const proxyAccounts = Array.from(accounts.values())
         .filter(acc => acc.status === 'active' && acc.credentials?.accessToken)
         .map(acc => ({
@@ -189,7 +238,7 @@ export function ProxyPanel() {
           authMethod: acc.credentials?.authMethod as 'social' | 'idc' | undefined
         }))
 
-      const result = await window.api.proxySyncAccounts(proxyAccounts)
+      const result = await api.proxySyncAccounts(proxyAccounts)
       if (result.success) {
         setAccountCount(result.accountCount || 0)
         await fetchStatus()
@@ -210,13 +259,25 @@ export function ProxyPanel() {
       // 先同步账号
       await syncAccounts()
 
-      const result = await window.api.proxyStart({
-        port: config.port,
-        host: config.host,
-        apiKey: config.apiKey,
-        enableMultiAccount: config.enableMultiAccount,
-        logRequests: config.logRequests
-      })
+      const result = api?.proxyStart
+        ? await api.proxyStart({
+            port: config.port,
+            host: config.host,
+            apiKey: config.apiKey,
+            enableMultiAccount: config.enableMultiAccount,
+            logRequests: config.logRequests
+          })
+        : await fetch('/api/proxy/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              port: config.port,
+              host: config.host,
+              apiKey: config.apiKey,
+              enableMultiAccount: config.enableMultiAccount,
+              logRequests: config.logRequests
+            })
+          }).then(r => r.json())
 
       if (result.success) {
         setIsRunning(true)
@@ -233,7 +294,9 @@ export function ProxyPanel() {
   const handleStop = async () => {
     setError(null)
     try {
-      const result = await window.api.proxyStop()
+      const result = api?.proxyStop
+        ? await api.proxyStop()
+        : await fetch('/api/proxy/stop', { method: 'POST' }).then(r => r.json())
       if (result.success) {
         setIsRunning(false)
         setStats(null)
@@ -258,7 +321,12 @@ export function ProxyPanel() {
     setIsRefreshingModels(true)
     setRefreshSuccess(false)
     try {
-      const result = await window.api.proxyRefreshModels()
+      if (!api?.proxyRefreshModels) {
+        setError(isEn ? 'Model refresh is only available in Electron mode' : '刷新模型仅支持 Electron 模式')
+        return
+      }
+
+      const result = await api.proxyRefreshModels()
       if (result.success) {
         setRefreshSuccess(true)
         setTimeout(() => setRefreshSuccess(false), 2000)
@@ -274,32 +342,39 @@ export function ProxyPanel() {
 
   // 加载历史日志
   useEffect(() => {
-    window.api.proxyLoadLogs().then(result => {
-      if (result.success && result.logs.length > 0) {
-        setRecentLogs(result.logs)
-      }
-    })
-  }, [])
+    if (!api?.proxyLoadLogs) return
+    api
+      .proxyLoadLogs()
+      .then((result: { success: boolean; logs: Array<{ time: string; path: string; model?: string; status: number; tokens?: number; inputTokens?: number; outputTokens?: number; credits?: number; error?: string }> }) => {
+        if (result.success && result.logs.length > 0) {
+          setRecentLogs(result.logs)
+        }
+      })
+      .catch((err: unknown) => {
+        console.warn('[Proxy] Failed to load logs:', err)
+      })
+  }, [api])
 
   // 保存日志（防抖）
   useEffect(() => {
-    if (recentLogs.length === 0) return
+    if (recentLogs.length === 0 || !api?.proxySaveLogs) return
     const timer = setTimeout(() => {
-      window.api.proxySaveLogs(recentLogs)
+      api.proxySaveLogs(recentLogs)
     }, 2000)
     return () => clearTimeout(timer)
-  }, [recentLogs])
+  }, [recentLogs, api])
 
   // 初始化
   useEffect(() => {
     fetchStatus()
+    if (!api) return
 
     // 监听事件
-    const unsubRequest = window.api.onProxyRequest((info) => {
+    const unsubRequest = api.onProxyRequest((info: any) => {
       console.log('[Proxy] Request:', info)
     })
 
-    const unsubResponse = window.api.onProxyResponse((info) => {
+    const unsubResponse = api.onProxyResponse((info: any) => {
       const now = new Date()
       const year = now.getFullYear()
       const month = (now.getMonth() + 1).toString().padStart(2, '0')
@@ -325,12 +400,12 @@ export function ProxyPanel() {
       fetchStatus()
     })
 
-    const unsubError = window.api.onProxyError((err) => {
+    const unsubError = api.onProxyError((err: string) => {
       console.error('[Proxy] Error:', err)
       setError(err)
     })
 
-    const unsubStatus = window.api.onProxyStatusChange((status) => {
+    const unsubStatus = api.onProxyStatusChange((status: { running: boolean; port: number }) => {
       setIsRunning(status.running)
       if (status.running) {
         setConfig(prev => ({ ...prev, port: status.port }))
@@ -343,7 +418,7 @@ export function ProxyPanel() {
       unsubError()
       unsubStatus()
     }
-  }, [fetchStatus])
+  }, [fetchStatus, api])
 
   // 账号变化时同步
   useEffect(() => {
@@ -474,7 +549,7 @@ export function ProxyPanel() {
                 onChange={(e) => {
                   const newPort = parseInt(e.target.value) || 5580
                   setConfig(prev => ({ ...prev, port: newPort }))
-                  window.api.proxyUpdateConfig({ port: newPort })
+                  void persistProxyConfig({ port: newPort })
                 }}
                 disabled={isRunning}
               />
@@ -489,7 +564,7 @@ export function ProxyPanel() {
                     onCheckedChange={(checked) => {
                       const newHost = checked ? '0.0.0.0' : '127.0.0.1'
                       setConfig(prev => ({ ...prev, host: newHost }))
-                      window.api.proxyUpdateConfig({ host: newHost })
+                      void persistProxyConfig({ host: newHost })
                     }}
                     disabled={isRunning}
                     className="scale-75"
@@ -503,7 +578,7 @@ export function ProxyPanel() {
                 onChange={(e) => {
                   const newHost = e.target.value
                   setConfig(prev => ({ ...prev, host: newHost }))
-                  window.api.proxyUpdateConfig({ host: newHost })
+                  void persistProxyConfig({ host: newHost })
                 }}
                 disabled={isRunning}
               />
@@ -523,7 +598,7 @@ export function ProxyPanel() {
                   onChange={(e) => {
                     const newApiKey = e.target.value || undefined
                     setConfig(prev => ({ ...prev, apiKey: newApiKey }))
-                    window.api.proxyUpdateConfig({ apiKey: newApiKey })
+                    void persistProxyConfig({ apiKey: newApiKey })
                   }}
                   disabled={isRunning}
                   className="pr-10"
@@ -590,7 +665,7 @@ export function ProxyPanel() {
                 checked={config.autoStart || false}
                 onCheckedChange={(checked) => {
                   setConfig(prev => ({ ...prev, autoStart: checked }))
-                  window.api.proxyUpdateConfig({ autoStart: checked })
+                  void persistProxyConfig({ autoStart: checked })
                 }}
               />
               <Label htmlFor="autoStart">{isEn ? 'Auto Start' : '随软件启动'}</Label>
@@ -601,7 +676,7 @@ export function ProxyPanel() {
                 checked={config.enableMultiAccount}
                 onCheckedChange={(checked) => {
                   setConfig(prev => ({ ...prev, enableMultiAccount: checked }))
-                  window.api.proxyUpdateConfig({ enableMultiAccount: checked })
+                  void persistProxyConfig({ enableMultiAccount: checked })
                 }}
                 disabled={isRunning}
               />
@@ -634,7 +709,7 @@ export function ProxyPanel() {
                     checked={config.autoSwitchOnQuotaExhausted || false}
                     onCheckedChange={(checked) => {
                       setConfig(prev => ({ ...prev, autoSwitchOnQuotaExhausted: checked }))
-                      window.api.proxyUpdateConfig({ autoSwitchOnQuotaExhausted: checked })
+                      void persistProxyConfig({ autoSwitchOnQuotaExhausted: checked })
                     }}
                     disabled={isRunning}
                   />
@@ -650,7 +725,7 @@ export function ProxyPanel() {
                 checked={config.logRequests}
                 onCheckedChange={(checked) => {
                   setConfig(prev => ({ ...prev, logRequests: checked }))
-                  window.api.proxyUpdateConfig({ logRequests: checked })
+                  void persistProxyConfig({ logRequests: checked })
                 }}
               />
               <Label htmlFor="logRequests">{isEn ? 'Log Requests' : '记录日志'}</Label>
@@ -673,7 +748,7 @@ export function ProxyPanel() {
                   onChange={(value) => {
                     const endpoint = value as 'codewhisperer' | 'amazonq' | undefined || undefined
                     setConfig(prev => ({ ...prev, preferredEndpoint: endpoint }))
-                    window.api.proxyUpdateConfig({ preferredEndpoint: endpoint })
+                    void persistProxyConfig({ preferredEndpoint: endpoint })
                   }}
                   placeholder={isEn ? 'Select endpoint' : '选择端点'}
                 />
@@ -689,7 +764,7 @@ export function ProxyPanel() {
                   onChange={(e) => {
                   const retries = parseInt(e.target.value) || 3
                   setConfig(prev => ({ ...prev, maxRetries: retries }))
-                  window.api.proxyUpdateConfig({ maxRetries: retries })
+                  void persistProxyConfig({ maxRetries: retries })
                 }}
                   disabled={isRunning}
                 />
@@ -705,7 +780,7 @@ export function ProxyPanel() {
                   onChange={(e) => {
                     const rounds = parseInt(e.target.value) || 0
                     setConfig(prev => ({ ...prev, autoContinueRounds: rounds }))
-                    window.api.proxyUpdateConfig({ autoContinueRounds: rounds })
+                    void persistProxyConfig({ autoContinueRounds: rounds })
                   }}
                   disabled={isRunning}
                 />
@@ -720,7 +795,7 @@ export function ProxyPanel() {
                     checked={config.disableTools || false}
                     onCheckedChange={(checked) => {
                       setConfig(prev => ({ ...prev, disableTools: checked }))
-                      window.api.proxyUpdateConfig({ disableTools: checked })
+                      void persistProxyConfig({ disableTools: checked })
                     }}
                     disabled={isRunning}
                   />
@@ -736,7 +811,7 @@ export function ProxyPanel() {
                         onCheckedChange={(checked) => {
                           const newMode = { ...(config as any).modelThinkingMode, [model]: checked }
                           setConfig(prev => ({ ...prev, modelThinkingMode: newMode } as any))
-                          window.api.proxyUpdateConfig({ modelThinkingMode: newMode } as any)
+                          void persistProxyConfig({ modelThinkingMode: newMode } as any)
                         }}
                         disabled={isRunning}
                       />
@@ -758,7 +833,7 @@ export function ProxyPanel() {
                   onChange={(value) => {
                     if (isRunning) return
                     setConfig(prev => ({ ...prev, thinkingOutputFormat: value } as any))
-                    window.api.proxyUpdateConfig({ thinkingOutputFormat: value } as any)
+                    void persistProxyConfig({ thinkingOutputFormat: value } as any)
                   }}
                   className={isRunning ? 'opacity-50 pointer-events-none' : ''}
                 />
@@ -793,12 +868,12 @@ export function ProxyPanel() {
                   size="icon"
                   className="h-4 w-4 text-muted-foreground hover:text-destructive"
                   onClick={async () => {
-                    await window.api.proxyResetRequestStats()
-                    const result = await window.api.proxyGetStatus()
-                    if (result.stats) {
+                    await api?.proxyResetRequestStats()
+                    const result = await api?.proxyGetStatus()
+                    if (result?.stats) {
                       setStats(result.stats as ProxyStats)
                     }
-                    if (result.sessionStats) {
+                    if (result?.sessionStats) {
                       setSessionStats(result.sessionStats as SessionStats)
                     }
                   }}
@@ -1019,14 +1094,14 @@ export function ProxyPanel() {
         totalTokens={(stats?.inputTokens || 0) + (stats?.outputTokens || 0)}
         onClearLogs={() => {
           setRecentLogs([])
-          window.api.proxySaveLogs([])
+          api?.proxySaveLogs([])
         }}
         onResetCredits={async () => {
-          await window.api.proxyResetCredits()
+          await api?.proxyResetCredits()
           fetchStatus()
         }}
         onResetTokens={async () => {
-          await window.api.proxyResetTokens()
+          await api?.proxyResetTokens()
           fetchStatus()
         }}
         isEn={isEn}
@@ -1046,7 +1121,7 @@ export function ProxyPanel() {
         onOpenModelMapping={async () => {
           // 获取可用模型列表
           try {
-            const result = await window.api.proxyGetModels()
+            const result = await api?.proxyGetModels()
             if (result.success && result.models) {
               setAvailableModels(result.models.map((m: { id: string; name?: string }) => ({ id: m.id, name: m.name || m.id })))
             }
@@ -1067,7 +1142,7 @@ export function ProxyPanel() {
         mappings={config.modelMappings || []}
         onMappingsChange={(mappings) => {
           setConfig(prev => ({ ...prev, modelMappings: mappings }))
-          window.api.proxyUpdateConfig({ modelMappings: mappings })
+          void persistProxyConfig({ modelMappings: mappings })
         }}
         apiKeys={(config.apiKeys || []).map(k => ({ id: k.id, name: k.name }))}
         availableModels={availableModels}
@@ -1081,7 +1156,7 @@ export function ProxyPanel() {
         selectedAccountId={config.selectedAccountId}
         onSelect={(accountId) => {
           setConfig(prev => ({ ...prev, selectedAccountId: accountId }))
-          window.api.proxyUpdateConfig({ selectedAccountIds: accountId ? [accountId] : [] })
+          void persistProxyConfig({ selectedAccountIds: accountId ? [accountId] : [] } as any)
         }}
         isEn={isEn}
       />

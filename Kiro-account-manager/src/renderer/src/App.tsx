@@ -34,6 +34,9 @@ function App(): React.JSX.Element {
 
   // 更新托盘账户信息
   const updateTrayInfo = useCallback(() => {
+    // Web 端不需要托盘功能
+    if (typeof window.api === 'undefined') return
+
     // 更新账户列表
     const accountList = Array.from(accounts.values()).map(acc => ({
       id: acc.id,
@@ -87,6 +90,9 @@ function App(): React.JSX.Element {
 
   // 监听托盘刷新账户事件
   useEffect(() => {
+    // Web 端不需要托盘功能
+    if (typeof window.api === 'undefined') return
+
     const unsubscribe = window.api.onTrayRefreshAccount(() => {
       checkAndRefreshExpiringTokens()
       updateTrayInfo()
@@ -98,6 +104,9 @@ function App(): React.JSX.Element {
 
   // 监听托盘切换账户事件
   useEffect(() => {
+    // Web 端不需要托盘功能
+    if (typeof window.api === 'undefined') return
+
     const unsubscribe = window.api.onTraySwitchAccount(() => {
       switchToNextAccount()
     })
@@ -108,6 +117,9 @@ function App(): React.JSX.Element {
 
   // 监听后台刷新结果
   useEffect(() => {
+    // Web 端不需要后台刷新功能
+    if (typeof window.api === 'undefined') return
+
     const unsubscribe = window.api.onBackgroundRefreshResult((data) => {
       handleBackgroundRefreshResult(data)
     })
@@ -118,6 +130,9 @@ function App(): React.JSX.Element {
 
   // 监听后台检查结果
   useEffect(() => {
+    // Web 端不需要后台检查功能
+    if (typeof window.api === 'undefined') return
+
     const unsubscribe = window.api.onBackgroundCheckResult((data) => {
       handleBackgroundCheckResult(data)
     })

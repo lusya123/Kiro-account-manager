@@ -15,6 +15,7 @@ import type {
   SubscriptionType,
   IdpType
 } from '../types/account'
+import { accountAdapter, machineIdAdapter } from '../adapters'
 
 // ============================================
 // 账号管理 Store
@@ -412,7 +413,7 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
           
           if (!boundMachineId) {
             // 如果没有绑定机器码，为该账户生成一个
-            boundMachineId = await window.api.machineIdGenerateRandom()
+            boundMachineId = await machineIdAdapter.getMachineId()
             get().bindMachineIdToAccount(id, boundMachineId)
           }
           
@@ -961,8 +962,8 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
     updateAccountStatus(id, 'refreshing')
 
     try {
-      // 通过主进程调用 Kiro API 刷新 Token（避免 CORS）
-      const result = await window.api.refreshAccountToken(account)
+      // 通过适配层调用 Token 刷新
+      const result = await accountAdapter.refreshToken(account)
 
       if (result.success && result.data) {
         set((state) => {
@@ -1059,7 +1060,7 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
 
     try {
       // 通过主进程调用 Kiro API 获取状态（避免 CORS）
-      const result = await window.api.checkAccountStatus(account)
+      const result = await accountAdapter.checkStatus(account)
 
       if (result.success && result.data) {
         set((state) => {
@@ -1101,7 +1102,7 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
             } : acc.subscription
 
             // 转换 IDP 类型（保持原值优先，只有明确匹配时才更新）
-            const apiIdp = result.data!.idp
+            const apiIdp = result.data?.idp
             let idpType = acc.idp
             if (apiIdp) {
               if (apiIdp === 'BuilderId') idpType = 'BuilderId'
@@ -1266,11 +1267,13 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
     set({ isLoading: true })
 
     try {
-      // 获取应用版本号
-      const appVersion = await window.api.getAppVersion()
+      // 获取应用版本号（Web 端使用默认版本）
+      const appVersion = typeof window.api !== 'undefined'
+        ? await window.api.getAppVersion()
+        : '1.5.0-web'
       set({ appVersion })
 
-      const data = await window.api.loadAccounts()
+      const data = await accountAdapter.loadAccounts()
 
       if (data) {
         const accounts = new Map(Object.entries(data.accounts ?? {}) as [string, Account][])
@@ -1289,90 +1292,93 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
 
         // 同步本地 SSO 缓存中的账号状态
         try {
-          const localResult = await window.api.getLocalActiveAccount()
-          if (localResult.success && localResult.data?.refreshToken) {
-            const localRefreshToken = localResult.data.refreshToken
-            // 查找匹配的账号
-            let foundAccountId: string | null = null
-            for (const [id, account] of accounts) {
-              if (account.credentials.refreshToken === localRefreshToken) {
-                foundAccountId = id
-                break
+          // Web 端不需要同步本地 SSO 缓存
+          if (typeof window.api !== 'undefined') {
+            const localResult = await window.api.getLocalActiveAccount()
+            if (localResult.success && localResult.data?.refreshToken) {
+              const localRefreshToken = localResult.data.refreshToken
+              // 查找匹配的账号
+              let foundAccountId: string | null = null
+              for (const [id, account] of accounts) {
+                if (account.credentials.refreshToken === localRefreshToken) {
+                  foundAccountId = id
+                  break
+                }
               }
-            }
-            // 如果找到匹配的账号，设为当前使用
-            if (foundAccountId) {
-              activeAccountId = foundAccountId
-              console.log('[Store] Synced active account from local SSO cache:', foundAccountId)
-            } else {
-              // 如果没有找到匹配的账号，自动导入
-              console.log('[Store] Local account not found in app, importing...')
-              const importResult = await window.api.loadKiroCredentials()
-              if (importResult.success && importResult.data) {
-                // 验证并获取账号信息
-                const verifyResult = await window.api.verifyAccountCredentials({
-                  refreshToken: importResult.data.refreshToken,
-                  clientId: importResult.data.clientId || '',
-                  clientSecret: importResult.data.clientSecret || '',
-                  region: importResult.data.region,
-                  authMethod: importResult.data.authMethod,
-                  provider: importResult.data.provider
-                })
-                if (verifyResult.success && verifyResult.data) {
-                  const now = Date.now()
-                  const newId = `${verifyResult.data.email}-${now}`
-                  const newAccount: Account = {
-                    id: newId,
-                    email: verifyResult.data.email,
-                    userId: verifyResult.data.userId,
-                    nickname: verifyResult.data.email ? verifyResult.data.email.split('@')[0] : undefined,
-                    idp: (importResult.data.provider || 'BuilderId') as 'BuilderId' | 'Google' | 'Github',
-                    credentials: {
-                      accessToken: verifyResult.data.accessToken,
-                      csrfToken: '',
-                      refreshToken: verifyResult.data.refreshToken,
-                      clientId: importResult.data.clientId || '',
-                      clientSecret: importResult.data.clientSecret || '',
-                      region: importResult.data.region || 'us-east-1',
-                      expiresAt: verifyResult.data.expiresIn ? now + verifyResult.data.expiresIn * 1000 : now + 3600 * 1000,
-                      authMethod: importResult.data.authMethod as 'IdC' | 'social',
-                      provider: (importResult.data.provider || 'BuilderId') as 'BuilderId' | 'Github' | 'Google'
-                    },
-                    subscription: {
-                      type: verifyResult.data.subscriptionType as SubscriptionType,
-                      title: verifyResult.data.subscriptionTitle,
-                      rawType: verifyResult.data.subscription?.rawType,
-                      daysRemaining: verifyResult.data.daysRemaining,
-                      expiresAt: verifyResult.data.expiresAt,
-                      managementTarget: verifyResult.data.subscription?.managementTarget,
-                      upgradeCapability: verifyResult.data.subscription?.upgradeCapability,
-                      overageCapability: verifyResult.data.subscription?.overageCapability
-                    },
-                    usage: {
-                      current: verifyResult.data.usage.current,
-                      limit: verifyResult.data.usage.limit,
-                      percentUsed: verifyResult.data.usage.limit > 0 
-                        ? verifyResult.data.usage.current / verifyResult.data.usage.limit 
-                        : 0,
-                      lastUpdated: now,
-                      baseLimit: verifyResult.data.usage.baseLimit,
-                      baseCurrent: verifyResult.data.usage.baseCurrent,
-                      freeTrialLimit: verifyResult.data.usage.freeTrialLimit,
-                      freeTrialCurrent: verifyResult.data.usage.freeTrialCurrent,
-                      freeTrialExpiry: verifyResult.data.usage.freeTrialExpiry,
-                      bonuses: verifyResult.data.usage.bonuses,
-                      nextResetDate: verifyResult.data.usage.nextResetDate,
-                      resourceDetail: verifyResult.data.usage.resourceDetail
-                    },
-                    status: 'active',
-                    createdAt: now,
-                    lastUsedAt: now,
-                    tags: [],
-                    isActive: true
+              // 如果找到匹配的账号，设为当前使用
+              if (foundAccountId) {
+                activeAccountId = foundAccountId
+                console.log('[Store] Synced active account from local SSO cache:', foundAccountId)
+              } else {
+                // 如果没有找到匹配的账号，自动导入
+                console.log('[Store] Local account not found in app, importing...')
+                const importResult = await window.api.loadKiroCredentials()
+                if (importResult.success && importResult.data) {
+                  // 验证并获取账号信息
+                  const verifyResult = await window.api.verifyAccountCredentials({
+                    refreshToken: importResult.data.refreshToken,
+                    clientId: importResult.data.clientId || '',
+                    clientSecret: importResult.data.clientSecret || '',
+                    region: importResult.data.region,
+                    authMethod: importResult.data.authMethod,
+                    provider: importResult.data.provider
+                  })
+                  if (verifyResult.success && verifyResult.data) {
+                    const now = Date.now()
+                    const newId = `${verifyResult.data.email}-${now}`
+                    const newAccount: Account = {
+                      id: newId,
+                      email: verifyResult.data.email,
+                      userId: verifyResult.data.userId,
+                      nickname: verifyResult.data.email ? verifyResult.data.email.split('@')[0] : undefined,
+                      idp: (importResult.data.provider || 'BuilderId') as 'BuilderId' | 'Google' | 'Github',
+                      credentials: {
+                        accessToken: verifyResult.data.accessToken,
+                        csrfToken: '',
+                        refreshToken: verifyResult.data.refreshToken,
+                        clientId: importResult.data.clientId || '',
+                        clientSecret: importResult.data.clientSecret || '',
+                        region: importResult.data.region || 'us-east-1',
+                        expiresAt: verifyResult.data.expiresIn ? now + verifyResult.data.expiresIn * 1000 : now + 3600 * 1000,
+                        authMethod: importResult.data.authMethod as 'IdC' | 'social',
+                        provider: (importResult.data.provider || 'BuilderId') as 'BuilderId' | 'Github' | 'Google'
+                      },
+                      subscription: {
+                        type: verifyResult.data.subscriptionType as SubscriptionType,
+                        title: verifyResult.data.subscriptionTitle,
+                        rawType: verifyResult.data.subscription?.rawType,
+                        daysRemaining: verifyResult.data.daysRemaining,
+                        expiresAt: verifyResult.data.expiresAt,
+                        managementTarget: verifyResult.data.subscription?.managementTarget,
+                        upgradeCapability: verifyResult.data.subscription?.upgradeCapability,
+                        overageCapability: verifyResult.data.subscription?.overageCapability
+                      },
+                      usage: {
+                        current: verifyResult.data.usage.current,
+                        limit: verifyResult.data.usage.limit,
+                        percentUsed: verifyResult.data.usage.limit > 0
+                          ? verifyResult.data.usage.current / verifyResult.data.usage.limit
+                          : 0,
+                        lastUpdated: now,
+                        baseLimit: verifyResult.data.usage.baseLimit,
+                        baseCurrent: verifyResult.data.usage.baseCurrent,
+                        freeTrialLimit: verifyResult.data.usage.freeTrialLimit,
+                        freeTrialCurrent: verifyResult.data.usage.freeTrialCurrent,
+                        freeTrialExpiry: verifyResult.data.usage.freeTrialExpiry,
+                        bonuses: verifyResult.data.usage.bonuses,
+                        nextResetDate: verifyResult.data.usage.nextResetDate,
+                        resourceDetail: verifyResult.data.usage.resourceDetail
+                      },
+                      status: 'active',
+                      createdAt: now,
+                      lastUsedAt: now,
+                      tags: [],
+                      isActive: true
+                    }
+                    accounts.set(newId, newAccount)
+                    activeAccountId = newId
+                    console.log('[Store] Auto-imported account from local SSO cache:', verifyResult.data.email)
                   }
-                  accounts.set(newId, newAccount)
-                  activeAccountId = newId
-                  console.log('[Store] Auto-imported account from local SSO cache:', verifyResult.data.email)
                 }
               }
             }
@@ -1475,8 +1481,8 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
     set({ isSyncing: true })
 
     try {
-      await window.api.saveAccounts({
-        accounts: Object.fromEntries(accounts),
+      await accountAdapter.saveAccounts({
+        accounts: Array.from(accounts.values()),
         groups: Object.fromEntries(groups),
         tags: Object.fromEntries(tags),
         activeAccountId,
@@ -2180,7 +2186,7 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
     const computeHash = () => {
       const { accounts, groups, tags, activeAccountId } = get()
       return JSON.stringify({
-        accounts: Object.fromEntries(accounts),
+        accounts: Array.from(accounts.values()),
         groups: Object.fromEntries(groups),
         tags: Object.fromEntries(tags),
         activeAccountId
@@ -2225,7 +2231,8 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
 
   refreshCurrentMachineId: async () => {
     try {
-      const result = await window.api.machineIdGetCurrent()
+      const machineId = await machineIdAdapter.getMachineId()
+      const result = { success: true, machineId }
       if (result.success && result.machineId) {
         set({ currentMachineId: result.machineId })
         
@@ -2249,10 +2256,10 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
     }
 
     // 生成新机器码（如果未提供）
-    const machineIdToSet = newMachineId || await window.api.machineIdGenerateRandom()
+    const machineIdToSet = newMachineId || generateRandomMachineId()
     
     try {
-      const result = await window.api.machineIdSet(machineIdToSet)
+      const result = await machineIdAdapter.setMachineId(machineIdToSet)
       
       if (result.success) {
         // 更新状态
@@ -2270,11 +2277,8 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
         }))
         get().saveToStorage()
         return true
-      } else if (result.requiresAdmin) {
-        // 需要管理员权限，主进程会处理弹窗
-        return false
       } else {
-        console.error('[MachineId] Failed to change:', result.error)
+        console.error('[MachineId] Failed to change machine ID')
         return false
       }
     } catch (error) {
@@ -2292,7 +2296,7 @@ export const useAccountsStore = create<AccountsStore>()((set, get) => ({
     }
 
     try {
-      const result = await window.api.machineIdSet(originalMachineId)
+      const result = await machineIdAdapter.setMachineId(originalMachineId)
       
       if (result.success) {
         set((s) => ({

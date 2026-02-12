@@ -56,6 +56,7 @@ interface ApiKey {
 export function ApiKeyManager() {
   const { language } = useAccountsStore()
   const isEn = language === 'en'
+  const api = (window as any).api
   
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [loading, setLoading] = useState(true)
@@ -69,8 +70,12 @@ export function ApiKeyManager() {
 
   const loadApiKeys = useCallback(async () => {
     try {
-      const result = await window.api.proxyGetApiKeys()
-      if (result.success) {
+      if (!api?.proxyGetApiKeys) {
+        setApiKeys([])
+        return
+      }
+      const result = await api.proxyGetApiKeys()
+      if (result?.success) {
         setApiKeys(result.apiKeys)
       }
     } catch (error) {
@@ -78,7 +83,7 @@ export function ApiKeyManager() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [api])
 
   useEffect(() => {
     loadApiKeys()
@@ -88,13 +93,14 @@ export function ApiKeyManager() {
     if (!newKeyName.trim()) return
     
     try {
+      if (!api?.proxyAddApiKey) return
       const creditsLimit = newKeyCreditsLimit ? parseFloat(newKeyCreditsLimit) : undefined
-      const result = await window.api.proxyAddApiKey({ 
+      const result = await api.proxyAddApiKey({
         name: newKeyName.trim(),
         format: newKeyFormat,
         creditsLimit: creditsLimit && creditsLimit > 0 ? creditsLimit : undefined
       })
-      if (result.success && result.apiKey) {
+      if (result?.success && result.apiKey) {
         setApiKeys(prev => [...prev, result.apiKey!])
         setNewKeyName('')
         setNewKeyCreditsLimit('')
@@ -108,8 +114,9 @@ export function ApiKeyManager() {
     if (!confirm(isEn ? 'Delete this API key?' : '确定删除此 API Key？')) return
     
     try {
-      const result = await window.api.proxyDeleteApiKey(id)
-      if (result.success) {
+      if (!api?.proxyDeleteApiKey) return
+      const result = await api.proxyDeleteApiKey(id)
+      if (result?.success) {
         setApiKeys(prev => prev.filter(k => k.id !== id))
         if (selectedKey === id) setSelectedKey(null)
       }
@@ -120,8 +127,9 @@ export function ApiKeyManager() {
 
   const handleToggleKey = async (id: string, enabled: boolean) => {
     try {
-      const result = await window.api.proxyUpdateApiKey(id, { enabled })
-      if (result.success) {
+      if (!api?.proxyUpdateApiKey) return
+      const result = await api.proxyUpdateApiKey(id, { enabled })
+      if (result?.success) {
         setApiKeys(prev => prev.map(k => k.id === id ? { ...k, enabled } : k))
       }
     } catch (error) {
@@ -133,8 +141,9 @@ export function ApiKeyManager() {
     if (!confirm(isEn ? 'Reset usage statistics?' : '确定重置用量统计？')) return
     
     try {
-      const result = await window.api.proxyResetApiKeyUsage(id)
-      if (result.success) {
+      if (!api?.proxyResetApiKeyUsage) return
+      const result = await api.proxyResetApiKeyUsage(id)
+      if (result?.success) {
         setApiKeys(prev => prev.map(k => k.id === id ? {
           ...k,
           usage: { totalRequests: 0, totalCredits: 0, totalInputTokens: 0, totalOutputTokens: 0, daily: {} }
@@ -366,12 +375,17 @@ export function ApiKeyManager() {
                   placeholder={isEn ? 'Unlimited' : '无限制'}
                   value={selectedKeyData.creditsLimit || ''}
                   onChange={async (e) => {
-                    const limit = e.target.value ? parseFloat(e.target.value) : null
-                    const result = await window.api.proxyUpdateApiKey(selectedKeyData.id, { 
-                      creditsLimit: limit && limit > 0 ? limit : null 
-                    })
-                    if (result.success) {
-                      setApiKeys(prev => prev.map(k => k.id === selectedKeyData.id ? { ...k, creditsLimit: limit && limit > 0 ? limit : undefined } : k))
+                    try {
+                      if (!api?.proxyUpdateApiKey) return
+                      const limit = e.target.value ? parseFloat(e.target.value) : null
+                      const result = await api.proxyUpdateApiKey(selectedKeyData.id, {
+                        creditsLimit: limit && limit > 0 ? limit : null
+                      })
+                      if (result?.success) {
+                        setApiKeys(prev => prev.map(k => k.id === selectedKeyData.id ? { ...k, creditsLimit: limit && limit > 0 ? limit : undefined } : k))
+                      }
+                    } catch (error) {
+                      console.error('Failed to update API key limit:', error)
                     }
                   }}
                   className="w-32 h-8"

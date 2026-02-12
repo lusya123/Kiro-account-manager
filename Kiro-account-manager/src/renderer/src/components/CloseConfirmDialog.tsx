@@ -11,6 +11,9 @@ export function CloseConfirmDialog() {
   const [rememberChoice, setRememberChoice] = useState(false)
 
   useEffect(() => {
+    // Web 端不需要关闭确认对话框
+    if (typeof window.api === 'undefined') return
+
     const unsubscribe = window.api.onShowCloseConfirmDialog(() => {
       setOpen(true)
       setRememberChoice(false)
@@ -19,7 +22,9 @@ export function CloseConfirmDialog() {
   }, [])
 
   const handleAction = (action: 'minimize' | 'quit' | 'cancel') => {
-    window.api.sendCloseConfirmResponse(action, rememberChoice)
+    if (typeof window.api !== 'undefined') {
+      window.api.sendCloseConfirmResponse(action, rememberChoice)
+    }
     setOpen(false)
   }
 

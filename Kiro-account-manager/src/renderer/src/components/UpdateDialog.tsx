@@ -27,6 +27,9 @@ export function UpdateDialog() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    // Web 端不需要自动更新功能
+    if (typeof window.api === 'undefined') return
+
     // 监听更新事件
     const unsubChecking = window.api.onUpdateChecking(() => {
       setStatus('checking')

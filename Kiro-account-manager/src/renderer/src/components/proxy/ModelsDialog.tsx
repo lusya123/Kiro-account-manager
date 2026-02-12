@@ -29,6 +29,7 @@ export function ModelsDialog({
   onOpenModelMapping,
   mappingCount = 0
 }: ModelsDialogProps) {
+  const api = (window as any).api
   const [models, setModels] = useState<ModelInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [fromCache, setFromCache] = useState(false)
@@ -38,8 +39,13 @@ export function ModelsDialog({
     setLoading(true)
     setError(null)
     try {
-      const result = await window.api.proxyGetModels()
-      if (result.success) {
+      if (!api?.proxyGetModels) {
+        setError(isEn ? 'Model API is only available in Electron mode' : '模型接口仅支持 Electron 模式')
+        return
+      }
+
+      const result = await api.proxyGetModels()
+      if (result?.success) {
         setModels(result.models)
         setFromCache(result.fromCache || false)
       } else {

@@ -8,10 +8,10 @@ import { encode, decode } from 'cbor-x'
 import { ProxyAgent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici'
 import icon from '../../resources/icon.png?asset'
 import { ProxyServer, type ProxyAccount, type ProxyConfig } from './proxy'
-import { 
-  initKProxyService, 
-  getKProxyService, 
-  generateDeviceId, 
+import {
+  initKProxyService,
+  getKProxyService,
+  generateDeviceId,
   isValidDeviceId,
   type KProxyConfig,
   type DeviceIdMapping

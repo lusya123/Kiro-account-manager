@@ -91,6 +91,7 @@ function CustomDropdown({ value, options, onChange, placeholder, className }: Cu
 export function ProxyDetailedLogsDialog({ open, onOpenChange }: ProxyDetailedLogsDialogProps) {
   const { t } = useTranslation()
   const isEn = t('common.unknown') === 'Unknown'
+  const api = (window as any).api
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [searchText, setSearchText] = useState('')
@@ -114,12 +115,17 @@ export function ProxyDetailedLogsDialog({ open, onOpenChange }: ProxyDetailedLog
 
   const loadLogs = useCallback(async () => {
     try {
-      const result = await window.api.proxyGetLogs()
-      setLogs(result)
+      if (!api?.proxyGetLogs) {
+        setLogs([])
+        return
+      }
+      const result = await api.proxyGetLogs()
+      setLogs(Array.isArray(result) ? result : [])
     } catch (error) {
       console.error('Failed to load logs:', error)
+      setLogs([])
     }
-  }, [])
+  }, [api])
 
   useEffect(() => {
     if (open) {
@@ -160,7 +166,8 @@ export function ProxyDetailedLogsDialog({ open, onOpenChange }: ProxyDetailedLog
 
   const handleClearLogs = async () => {
     try {
-      await window.api.proxyClearLogs()
+      if (!api?.proxyClearLogs) return
+      await api.proxyClearLogs()
       setLogs([])
     } catch (error) {
       console.error('Failed to clear logs:', error)
